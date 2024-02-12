@@ -128,7 +128,9 @@ class BybitStore(object):
     def get_filters(self, symbol):
         i = self.bybit_session.get_instruments_info(category=self.category, symbol=symbol)  # symbol_info
         if i and 'result' in i and i['result'] and 'list' in i['result'] and i['result']['list']:
-            self._step_size[symbol] = i['result']['list'][0]['lotSizeFilter']['basePrecision']
+            match self.category:
+                case 'spot': self._step_size[symbol] = i['result']['list'][0]['lotSizeFilter']['basePrecision']
+                case 'linear': self._step_size[symbol] = i['result']['list'][0]['lotSizeFilter']['qtyStep']
             self._min_order[symbol] = i['result']['list'][0]['lotSizeFilter']['minOrderQty']
             self._tick_size[symbol] = i['result']['list'][0]['priceFilter']['tickSize']
 
