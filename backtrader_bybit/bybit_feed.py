@@ -24,6 +24,7 @@ class BybitData(DataBase):
         self.compression = 1
         self.start_date = None
         self.LiveBars = None
+        self.is_live = False
 
         self._state = None
 
@@ -83,6 +84,7 @@ class BybitData(DataBase):
 
                 if self._state != self._ST_LIVE:
                     print(f"Live started for ticker: {self.symbol}")
+                    self.is_live = True
                     self._state = self._ST_LIVE
                     self.put_notification(self.LIVE)
 
@@ -198,7 +200,7 @@ class BybitData(DataBase):
                 end=round(_now.timestamp()*1000),  # in milliseconds
             )
 
-            self.get_live_bars_from = _now
+            self.get_live_bars_from = datetime.now().replace(second=0, microsecond=0)
 
             print(f"- {self.symbol} - History data - Ok")
 
