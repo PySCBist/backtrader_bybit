@@ -98,6 +98,7 @@ class BybitData(DataBase):
                     interval=self.interval,
                     start=round(self.get_live_bars_from.timestamp()*1000),  # in milliseconds
                     end=round(_now.timestamp()*1000),  # in milliseconds
+                    limit=1000,
                 )
 
                 # if there is something to process
@@ -198,6 +199,7 @@ class BybitData(DataBase):
                 interval=self.interval,
                 start=round(self.start_date.timestamp()*1000),  # in milliseconds
                 end=round(_now.timestamp()*1000),  # in milliseconds
+                limit=1000,
             )
 
             self.get_live_bars_from = datetime.now().replace(second=0, microsecond=0)
