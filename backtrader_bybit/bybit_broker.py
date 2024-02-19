@@ -15,7 +15,7 @@ class BybitOrder(OrderBase):
         self.data = data
         self.exectype = exectype
         self.ordtype = self.Buy if side == SIDE_BUY else self.Sell
-        
+
         # Market order price is zero
         if self.exectype == Order.Market:
             self.size = size
@@ -38,6 +38,7 @@ class BybitBroker(BrokerBase):
         Order.Market: ORDER_TYPE_MARKET,
         Order.Stop: ORDER_TYPE_STOP_LOSS,
         Order.StopLimit: ORDER_TYPE_STOP_LOSS_LIMIT,
+        Order.StopTrail: ORDER_TYPE_STOP_TRAIL,
     }
 
     def __init__(self, store):
@@ -50,7 +51,7 @@ class BybitBroker(BrokerBase):
         self.startingvalue = self.value = 0  # Стартовая и текущая стоимость позиций
 
         self.open_orders = list()
-    
+
         self._store = store
         self._store.bybit_socket.order_stream(self._handle_user_socket_message)
 
@@ -103,14 +104,16 @@ class BybitBroker(BrokerBase):
                                 executed_value = float(d['cumExecValue'])
                                 executed_comm = float(d['cumExecFee'])
                                 # print(_dt, executed_size, executed_price)
-                                self._execute_order(o, _dt, executed_size, executed_price, executed_value, executed_comm)
+                                self._execute_order(o, _dt, executed_size, executed_price, executed_value,
+                                                    executed_comm)
                             self._set_order_status(o, d['orderStatus'])
 
                             if o.status not in [Order.Accepted, Order.Partial]:
                                 self.open_orders.remove(o)
                             self.notify(o)
-        else: print(msg)
-    
+        else:
+            print(msg)
+
     def _set_order_status(self, order, bybit_order_status):
         if bybit_order_status == ORDER_STATUS_CANCELED:
             order.cancel()
@@ -123,10 +126,10 @@ class BybitBroker(BrokerBase):
         elif bybit_order_status == ORDER_STATUS_REJECTED:
             order.reject()
 
-    def _submit(self, owner, data, side, exectype, size, price):
+    def _submit(self, owner, data, side, exectype, size, price, trailamount, **kwargs):
         type = self._ORDER_TYPES.get(exectype, ORDER_TYPE_MARKET)
         symbol = data._name
-        bybit_order = self._store.create_order(symbol, side, type, size, price)
+        bybit_order = self._store.create_order(symbol, side, type, size, price, trailamount, **kwargs)
         order = BybitOrder(owner, data, exectype, bybit_order, side, size, price)
         if order.status == Order.Accepted:
             self.open_orders.append(order)
@@ -137,13 +140,13 @@ class BybitBroker(BrokerBase):
             exectype=None, valid=None, tradeid=0, oco=None,
             trailamount=None, trailpercent=None,
             **kwargs):
-        return self._submit(owner, data, SIDE_BUY, exectype, size, price)
+        return self._submit(owner, data, SIDE_BUY, exectype, size, price, trailamount, **kwargs)
 
     def cancel(self, order):
         order_id = order.bybit_order['orderId']
         symbol = order.bybit_order['symbol']
         self._store.cancel_order(symbol=symbol, order_id=order_id)
-        
+
     def format_price(self, value):
         return self._store.format_price(value)
 
@@ -177,4 +180,4 @@ class BybitBroker(BrokerBase):
              exectype=None, valid=None, tradeid=0, oco=None,
              trailamount=None, trailpercent=None,
              **kwargs):
-        return self._submit(owner, data, SIDE_SELL, exectype, size, price)
+        return self._submit(owner, data, SIDE_SELL, exectype, size, price, trailamount, **kwargs)

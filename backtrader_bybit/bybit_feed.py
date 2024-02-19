@@ -2,7 +2,6 @@ from collections import deque
 from datetime import datetime, timezone, timedelta, time, date
 from time import sleep
 
-
 from backtrader.feed import DataBase
 from backtrader.utils import date2num
 
@@ -14,7 +13,7 @@ class BybitData(DataBase):
     params = (
         ('drop_newest', False),
     )
-    
+
     # States for the Finite State Machine in _load
     _ST_LIVE, _ST_HISTORBACK, _ST_OVER = range(3)
 
@@ -90,17 +89,15 @@ class BybitData(DataBase):
 
                 if not self.get_live_bars_from:
                     self.get_live_bars_from = datetime.now()
-
                 _now = datetime.now() + timedelta(minutes=1)
                 klines = self._store.bybit_session.get_kline(
                     category=self._store.category,
                     symbol=self.symbol,
                     interval=self.interval,
-                    start=round(self.get_live_bars_from.timestamp()*1000),  # in milliseconds
-                    end=round(_now.timestamp()*1000),  # in milliseconds
+                    start=round(self.get_live_bars_from.timestamp() * 1000),  # in milliseconds
+                    end=round(_now.timestamp() * 1000),  # in milliseconds
                     limit=1000,
                 )
-
                 # if there is something to process
                 if 'result' in klines and 'list' in klines['result'] and klines['result']['list']:
                     new_klines = klines['result']['list']  # taking new rows of data
@@ -142,7 +139,8 @@ class BybitData(DataBase):
 
                     # print(len(buf_klines_last_sec), _current_candle_time + timedelta(seconds=1) < datetime.now() < _current_candle_time + timedelta(seconds=3))
                     # print(dt, "|", _previous_candle_time, _current_candle_time, _future_candle_time, "|", datetime.now())
-                    if len(buf_klines_last_sec) and _current_candle_time + timedelta(seconds=1) < datetime.now() < _current_candle_time + timedelta(seconds=3):
+                    if len(buf_klines_last_sec) and _current_candle_time + timedelta(
+                            seconds=1) < datetime.now() < _current_candle_time + timedelta(seconds=3):
                         for dt, kline in buf_klines_last_sec.items():
                             if kline not in self.all_history_data:  # if there is no such data row,
                                 # print(dt, "|", _previous_candle_time, _current_candle_time, _future_candle_time, "|", datetime.now())
@@ -197,8 +195,8 @@ class BybitData(DataBase):
                 category=self._store.category,
                 symbol=self.symbol,
                 interval=self.interval,
-                start=round(self.start_date.timestamp()*1000),  # in milliseconds
-                end=round(_now.timestamp()*1000),  # in milliseconds
+                start=round(self.start_date.timestamp() * 1000),  # in milliseconds
+                end=round(_now.timestamp() * 1000),  # in milliseconds
                 limit=1000,
             )
 
