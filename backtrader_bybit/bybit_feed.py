@@ -1,11 +1,39 @@
 from collections import deque
-from datetime import datetime, timezone, timedelta, time, date
+from datetime import datetime, timedelta, date
 from time import sleep
 
 from backtrader.feed import DataBase
 from backtrader.utils import date2num
 
 from backtrader import TimeFrame as tf
+
+
+def interval_to_milliseconds(interval: str):
+    """Convert a Bybit interval string to milliseconds
+
+    :param interval: Bybit interval string, e.g.: 1, 5, 15, 30, 60, 120, 240, D, W
+
+    :return:
+         int value of interval in milliseconds
+         None if interval prefix is not a decimal integer
+         None if interval suffix is not one of D, W
+
+    """
+    seconds_per_unit = {
+        "1": 60,
+        "5": 5 * 60,
+        "15": 15 * 60,
+        "30": 30 * 60,
+        "60": 60 * 60,
+        "120": 120 * 60,
+        "240": 240 * 60,
+        "D": 24 * 60 * 60,
+        "W": 7 * 24 * 60 * 60,
+    }
+    try:
+        return seconds_per_unit[interval] * 1000
+    except (ValueError, KeyError):
+        return None
 
 
 class BybitData(DataBase):
@@ -190,15 +218,7 @@ class BybitData(DataBase):
             self._state = self._ST_HISTORBACK
             self.put_notification(self.DELAYED)
 
-            _now = datetime.now()
-            klines = self._store.bybit_session.get_kline(
-                category=self._store.category,
-                symbol=self.symbol,
-                interval=self.interval,
-                start=round(self.start_date.timestamp() * 1000),  # in milliseconds
-                end=round(_now.timestamp() * 1000),  # in milliseconds
-                limit=1000,
-            )
+            klines = self._get_historical_klines()
 
             self.get_live_bars_from = datetime.now().replace(second=0, microsecond=0)
 
@@ -266,3 +286,54 @@ class BybitData(DataBase):
             # print(_future_candle_time)
 
         return _previous_candle_time, _current_candle_time, _future_candle_time
+
+    def _get_historical_klines(self):
+        output_data = []
+        limit = 1000
+
+        from_ts = self.start_date.timestamp() * 1000
+        from_ts = int(max(self._get_earliest_valid_timestamp(), from_ts))
+
+        end_ts = int(datetime.now().timestamp() * 1000)
+        timeframe = interval_to_milliseconds(self.interval)
+
+        idx = 0
+        while True:
+
+            temp_data = self._store.bybit_session.get_kline(category="linear",
+                                                            symbol=self.symbol,
+                                                            interval=self.interval,
+                                                            start=from_ts,
+                                                            end=end_ts,
+                                                            limit=limit)
+
+            # end_data_timestamp = float(temp_data['result']['list'][0][0])/1000
+            # print(f'End date: {datetime.fromtimestamp(end_data_timestamp).strftime("%d-%m-%Y %H:%M:%S")}')
+
+            start_data_timestamp = float(temp_data['result']['list'][-1][0]) / 1000
+            # print(f'Start date: {datetime.fromtimestamp(start_data_timestamp).strftime("%d-%m-%Y %H:%M:%S")}')
+
+            if temp_data['result']['list']:
+                if not output_data:
+                    output_data = temp_data
+                else:
+                    output_data['result']['list'].extend(temp_data['result']['list'])
+
+            end_ts = int(start_data_timestamp * 1000 - timeframe)
+
+            if end_ts and end_ts <= from_ts:
+                break
+
+            if not len(temp_data) or len(temp_data['result']['list']) < limit:
+                break
+
+            idx += 1
+
+            if idx % 3 == 0:
+                sleep(1)
+
+        return output_data
+
+    def _get_earliest_valid_timestamp(self) -> float:
+        info = self._store.bybit_session.get_instruments_info(category=self._store.category, symbol=self.symbol)
+        return float(info['result']['list'][0]['launchTime'])
