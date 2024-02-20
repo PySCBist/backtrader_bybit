@@ -28,6 +28,8 @@ class BybitStore(object):
     def __init__(self, api_key, api_secret, coin_target, testnet=False, category="spot", accountType="UNIFIED"):
         self.bybit_session = HTTP(api_key=api_key, api_secret=api_secret, testnet=testnet)
         self.bybit_socket = WebSocket(api_key=api_key, api_secret=api_secret, testnet=testnet, channel_type="private")
+        self.bybit_linear_socket = WebSocket(api_key=api_key, api_secret=api_secret, testnet=testnet,
+                                             channel_type="linear")
 
         self.coin_target = coin_target  # USDT
         self.category = category  # Unified account: spot, linear, option. Normal account: linear, inverse.
