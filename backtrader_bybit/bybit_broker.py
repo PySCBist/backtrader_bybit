@@ -96,7 +96,7 @@ class BybitBroker(BrokerBase):
                     for o in self.open_orders:
                         # print("o:", o)
                         # print("o.bybit_order:", o.bybit_order)
-                        if o.bybit_order['orderId'] == d['orderId']:
+                        if o.bybit_order['orderId'] == d.get('orderId'):
                             if d['orderStatus'] in [ORDER_STATUS_FILLED, ORDER_STATUS_PARTIALLY_FILLED]:
                                 _dt = dt.datetime.fromtimestamp(int(d['updatedTime']) / 1000)
                                 executed_size = float(d['cumExecQty'])
@@ -132,8 +132,9 @@ class BybitBroker(BrokerBase):
         bybit_order = self._store.create_order(symbol, side, type, size, price, trailamount, **kwargs)
         order = BybitOrder(owner, data, exectype, bybit_order, side, size, price)
         if order.status == Order.Accepted:
-            self.open_orders.append(order)
-        self.notify(order)
+            if order.bybit_order.get('orderId'):
+                self.open_orders.append(order)
+                self.notify(order)
         return order
 
     def buy(self, owner, data, size, price=None, plimit=None,
