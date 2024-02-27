@@ -154,6 +154,9 @@ class BybitBroker(BrokerBase):
     def get_asset_balance(self, asset):
         return self._store.get_asset_balance(asset)
 
+    def get_free_margin_and_equity(self, asset):
+        return self._store.get_free_margin_and_equity(asset)
+
     def getcash(self):
         self.cash = self._store._cash
         return self.cash

@@ -130,6 +130,12 @@ class BybitStore(object):
         else:
             return 0, 0
 
+    def get_free_margin_and_equity(self, asset):
+        """Получение свободной маржи и полного эквити"""
+        w = self.bybit_session.get_wallet_balance(accountType='unified')  # wallet_balance
+        balance = [coin for coin in w['result']['list'][0]['coin'] if coin['coin'] == asset]
+        return float(balance[0]['availableToWithdraw']), float(balance[0]['equity'])
+
     def get_symbol_balance(self, symbol):
         """Get symbol balance in symbol"""
         balance = 0
