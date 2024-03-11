@@ -97,11 +97,11 @@ class BybitStore(object):
         elif type == ORDER_TYPE_STOP_TRAIL:
             if 'activeprice' in kwargs:
                 params.update({
-                    'activePrice': self.format_price(symbol, kwargs['activeprice']),
+                    'activePrice': str(kwargs['activeprice']),
                 })
             if 'price':  # Выставление SL одновременно со Stop Trail
                 params.update({
-                    'stopLoss': self.format_price(symbol, price),
+                    'stopLoss': str(price),
                     'tpslMode': 'Full',
                 })
             return self.bybit_session.set_trading_stop(
