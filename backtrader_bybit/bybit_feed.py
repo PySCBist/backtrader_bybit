@@ -87,6 +87,7 @@ class BybitData(DataBase):
         try:
             kline = self._data.popleft()
         except IndexError:
+            sleep(1)
             return None
 
         if type(kline) == list:
