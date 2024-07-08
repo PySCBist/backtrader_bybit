@@ -28,6 +28,8 @@ class BybitStore(object):
     def __init__(self, api_key, api_secret, coin_target, testnet=False, category="spot", accountType="UNIFIED"):
         self.bybit_session = HTTP(api_key=api_key, api_secret=api_secret, testnet=testnet)
         self.bybit_socket = WebSocket(api_key=api_key, api_secret=api_secret, testnet=testnet, channel_type="private")
+        self.bybit_linear_socket = WebSocket(api_key=api_key, api_secret=api_secret, testnet=testnet,
+                                             channel_type="linear")
 
         self.coin_target = coin_target  # USDT
         self.category = category  # Unified account: spot, linear, option. Normal account: linear, inverse.
@@ -58,25 +60,56 @@ class BybitStore(object):
 
     def cancel_order(self, symbol, order_id):
         return self.bybit_session.cancel_order(category=self.category, symbol=symbol, orderId=order_id)
-    
-    def create_order(self, symbol, side, type, size, price):
+
+    def create_order(self, symbol, side, type, size, price, trailamount, **kwargs):
         params = dict()
-        if type != ORDER_TYPE_MARKET:
+        if type in [ORDER_TYPE_LIMIT, ORDER_TYPE_MARKET]:
+            if type == ORDER_TYPE_LIMIT:
+                params.update({
+                    'price': self.format_price(symbol, price)
+                })
+
+            elif type == ORDER_TYPE_MARKET:
+                params.update({
+                    'marketUnit': 'baseCoin'
+                })
+
+            return self.bybit_session.place_order(
+                category=self.category,
+                symbol=symbol,  # (string): Symbol name
+                side=side,  # (string): Buy, Sell
+                orderType=type,  # (string): Market, Limit
+                qty=self.format_quantity(symbol, size),  # (string): Order quantity
+                **params)
+
+        elif type == ORDER_TYPE_STOP_LOSS:
             params.update({
-                'price': self.format_price(symbol, price)
-            })
-        if type == ORDER_TYPE_MARKET:
-            params.update({
-                'marketUnit': 'baseCoin'
+                'stopLoss': self.format_price(symbol, price),
+                'tpslMode': 'Full',
             })
 
-        return self.bybit_session.place_order(
-            category=self.category,  # (string): Unified account: spot, linear, option. Normal account: linear, inverse.
-            symbol=symbol,           # (string): Symbol name
-            side=side,               # (string): Buy, Sell
-            orderType=type,          # (string): Market, Limit
-            qty=self.format_quantity(symbol, size),  # (string): Order quantity
-            **params)
+            return self.bybit_session.set_trading_stop(
+                category=self.category,
+                symbol=symbol,  # (string): Symbol name
+                positionIdx=0,
+                **params)
+
+        elif type == ORDER_TYPE_STOP_TRAIL:
+            if 'activeprice' in kwargs:
+                params.update({
+                    'activePrice': str(kwargs['activeprice']),
+                })
+            if 'price':  # Выставление SL одновременно со Stop Trail
+                params.update({
+                    'stopLoss': str(price),
+                    'tpslMode': 'Full',
+                })
+            return self.bybit_session.set_trading_stop(
+                category=self.category,
+                symbol=symbol,  # (string): Symbol name
+                trailingStop=str(trailamount),  # (string): Stop Trail distance quantity
+                positionIdx=0,
+                **params)
 
     def format_price(self, symbol, price):
         return self._format_value(price, self._tick_size[symbol])
@@ -98,11 +131,17 @@ class BybitStore(object):
         else:
             return 0, 0
 
+    def get_free_margin_and_equity(self, asset):
+        """Получение свободной маржи и полного эквити"""
+        w = self.bybit_session.get_wallet_balance(accountType='unified')  # wallet_balance
+        balance = [coin for coin in w['result']['list'][0]['coin'] if coin['coin'] == asset]
+        return float(balance[0]['availableToWithdraw']), float(balance[0]['equity'])
+
     def get_symbol_balance(self, symbol):
         """Get symbol balance in symbol"""
         balance = 0
         try:
-            symbol = symbol[0:len(symbol)-len(self.coin_target)]
+            symbol = symbol[0:len(symbol) - len(self.coin_target)]
             balance, locked = self.get_asset_balance(symbol)
         except Exception as e:
             print("Error:", e)
@@ -123,13 +162,18 @@ class BybitStore(object):
         self.symbols.append(symbol)
         self.get_filters(symbol=symbol)
         if symbol not in self._datas:
-            self._datas[f"{symbol}{tf}"] = BybitData(store=self, **kwargs)  # timeframe=timeframe, compression=compression, start_date=start_date, LiveBars=LiveBars
+            self._datas[f"{symbol}{tf}"] = BybitData(store=self,
+                                                     **kwargs)  # timeframe=timeframe, compression=compression, start_date=start_date, LiveBars=LiveBars
         return self._datas[f"{symbol}{tf}"]
-        
+
     def get_filters(self, symbol):
         i = self.bybit_session.get_instruments_info(category=self.category, symbol=symbol)  # symbol_info
         if i and 'result' in i and i['result'] and 'list' in i['result'] and i['result']['list']:
-            self._step_size[symbol] = i['result']['list'][0]['lotSizeFilter']['basePrecision']
+            match self.category:
+                case 'spot':
+                    self._step_size[symbol] = i['result']['list'][0]['lotSizeFilter']['basePrecision']
+                case 'linear':
+                    self._step_size[symbol] = i['result']['list'][0]['lotSizeFilter']['qtyStep']
             self._min_order[symbol] = i['result']['list'][0]['lotSizeFilter']['minOrderQty']
             self._tick_size[symbol] = i['result']['list'][0]['priceFilter']['tickSize']
 

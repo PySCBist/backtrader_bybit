@@ -1,7 +1,7 @@
+import pandas as pd
 from collections import deque
-from datetime import datetime, timezone, timedelta, time, date
+from datetime import datetime, timedelta, date
 from time import sleep
-
 
 from backtrader.feed import DataBase
 from backtrader.utils import date2num
@@ -9,12 +9,40 @@ from backtrader.utils import date2num
 from backtrader import TimeFrame as tf
 
 
+def interval_to_milliseconds(interval: str):
+    """Convert a Bybit interval string to milliseconds
+
+    :param interval: Bybit interval string, e.g.: 1, 5, 15, 30, 60, 120, 240, D, W
+
+    :return:
+         int value of interval in milliseconds
+         None if interval prefix is not a decimal integer
+         None if interval suffix is not one of D, W
+
+    """
+    seconds_per_unit = {
+        "1": 60,
+        "5": 5 * 60,
+        "15": 15 * 60,
+        "30": 30 * 60,
+        "60": 60 * 60,
+        "120": 120 * 60,
+        "240": 240 * 60,
+        "D": 24 * 60 * 60,
+        "W": 7 * 24 * 60 * 60,
+    }
+    try:
+        return seconds_per_unit[interval] * 1000
+    except (ValueError, KeyError):
+        return None
+
+
 class BybitData(DataBase):
     """Class for getting historical and live ticker data"""
     params = (
         ('drop_newest', False),
     )
-    
+
     # States for the Finite State Machine in _load
     _ST_LIVE, _ST_HISTORBACK, _ST_OVER = range(3)
 
@@ -24,15 +52,11 @@ class BybitData(DataBase):
         self.compression = 1
         self.start_date = None
         self.LiveBars = None
+        self.is_live = False
 
         self._state = None
 
         self.symbol = self.p.dataname
-
-        self.limit = 200
-        if 'rows_by_request' in kwargs: self.limit = kwargs['rows_by_request']
-        if self.limit > 1000: self.limit = 1000
-        if self.limit < 200: self.limit = 200
 
         if hasattr(self.p, 'timeframe'): self.timeframe = self.p.timeframe
         if hasattr(self.p, 'compression'): self.compression = self.p.compression
@@ -51,11 +75,7 @@ class BybitData(DataBase):
         if self._state == self._ST_OVER:
             return False
         elif self._state == self._ST_LIVE:
-            # return self._load_kline()
-            if self._load_kline():
-                return True
-            else:
-                self._start_live()
+            return self._load_kline()
         elif self._state == self._ST_HISTORBACK:
             if self._load_kline():
                 return True
@@ -67,6 +87,7 @@ class BybitData(DataBase):
         try:
             kline = self._data.popleft()
         except IndexError:
+            sleep(1)
             return None
 
         if type(kline) == list:
@@ -80,90 +101,44 @@ class BybitData(DataBase):
 
         return True
 
+    def _handle_kline_socket_message(self, msg):
+        if msg['topic'] == f'kline.{self.interval}.{self.symbol}':
+            if msg['data'][0]['confirm']:  # Is closed
+                kline = self._parser_to_kline(msg['data'][0]['start'], msg['data'][0])
+                self._data.extend(kline.values.tolist())
+        else:
+            raise msg
+
+    def _parser_dataframe(self, data):
+        df = data.copy()
+        df.columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume', 'turnover']
+        df['timestamp'] = df['timestamp'].values.astype(float)
+        df['open'] = df['open'].values.astype(float)
+        df['high'] = df['high'].values.astype(float)
+        df['low'] = df['low'].values.astype(float)
+        df['close'] = df['close'].values.astype(float)
+        df['volume'] = df['volume'].values.astype(float)
+        df['turnover'] = df['turnover'].values.astype(float)
+        return df
+
+    def _parser_to_kline(self, timestamp, kline):
+        df = pd.DataFrame([[timestamp, kline['open'], kline['high'],
+                            kline['low'], kline['close'], kline['volume'], kline['turnover']]])
+        return self._parser_dataframe(df)
+
     def _start_live(self):
-        """Getting live data"""
-        buf_klines_last_sec = {}
-        while True:
-            if self.LiveBars:
+        # if live mode
+        if self.LiveBars:
+            self._state = self._ST_LIVE
+            self.is_live = True
+            self.put_notification(self.LIVE)
 
-                if self._state != self._ST_LIVE:
-                    print(f"Live started for ticker: {self.symbol}")
-                    self._state = self._ST_LIVE
-                    self.put_notification(self.LIVE)
-
-                if not self.get_live_bars_from:
-                    self.get_live_bars_from = datetime.now()
-
-                _now = datetime.now() + timedelta(minutes=1)
-                klines = self._store.bybit_session.get_kline(
-                    category=self._store.category,
-                    symbol=self.symbol,
-                    interval=self.interval,
-                    start=round(self.get_live_bars_from.timestamp()*1000),  # in milliseconds
-                    end=round(_now.timestamp()*1000),  # in milliseconds
-                )
-
-                # if there is something to process
-                if 'result' in klines and 'list' in klines['result'] and klines['result']['list']:
-                    new_klines = klines['result']['list']  # taking new rows of data
-                    _empty = True
-                    _klines = []
-
-                    _previous_candle_time, _current_candle_time, _future_candle_time = self.get_previous_future_candle_time()
-                    # print(_previous_candle_time, _current_candle_time, _future_candle_time)
-
-                    # ----------
-                    # 2024-02-04 16:35:00 | 2024-02-04 16:35:00 2024-02-04 16:36:00 2024-02-04 16:37:00 | 2024-02-04 16:36:00.136035
-                    # ----------
-                    # 2024-02-04 16:35:00 / BTCUSDT [1] - Open: 43008.49, High: 43012.36, Low: 42980.45, Close: 42980.45, Volume: 5.085419 - Live: True - Live data
-                    # ----------
-                    # 2024-02-04 16:35:00 | 2024-02-04 16:35:00 2024-02-04 16:36:00 2024-02-04 16:37:00 | 2024-02-04 16:36:00.339052
-                    # 2024-02-04 16:34:00 | 2024-02-04 16:35:00 2024-02-04 16:36:00 2024-02-04 16:37:00 | 2024-02-04 16:36:00.339052
-                    # ----------
-                    # ----------
-                    # 2024-02-04 16:35:00 | 2024-02-04 16:35:00 2024-02-04 16:36:00 2024-02-04 16:37:00 | 2024-02-04 16:36:00.542093
-                    # ----------
-                    # 2024-02-04 16:35:00 / BTCUSDT [1] - Open: 43008.49, High: 43012.36, Low: 42980.31, Close: 42980.31, Volume: 5.08668 - Live: True - Live data
-                    # ----------
-                    # 2024-02-04 16:35:00 | 2024-02-04 16:35:00 2024-02-04 16:36:00 2024-02-04 16:37:00 | 2024-02-04 16:36:00.742522
-                    # ----------
-
-                    # To prevent situation, when in last second we can get two candles - let's add to _previous_candle_time +1..3 seconds
-
-                    # print("----------")
-                    for kline in new_klines:
-                        dt = datetime.fromtimestamp(int(kline[0]) / 1000)
-                        if dt <= _previous_candle_time:
-                            # print(dt, "|", _previous_candle_time, _current_candle_time, _future_candle_time, "|", datetime.now())
-                            buf_klines_last_sec[dt] = kline  # can be several for one time
-                            # if kline not in self.all_history_data:  # if there is no such data row,
-                            #     self.all_history_data.append(kline)
-                            #     _klines.append(kline)
-                            #     _empty = False
-                    # print("----------")
-
-                    # print(len(buf_klines_last_sec), _current_candle_time + timedelta(seconds=1) < datetime.now() < _current_candle_time + timedelta(seconds=3))
-                    # print(dt, "|", _previous_candle_time, _current_candle_time, _future_candle_time, "|", datetime.now())
-                    if len(buf_klines_last_sec) and _current_candle_time + timedelta(seconds=1) < datetime.now() < _current_candle_time + timedelta(seconds=3):
-                        for dt, kline in buf_klines_last_sec.items():
-                            if kline not in self.all_history_data:  # if there is no such data row,
-                                # print(dt, "|", _previous_candle_time, _current_candle_time, _future_candle_time, "|", datetime.now())
-                                self.all_history_data.append(kline)
-                                _klines.append(kline)
-                                _empty = False
-                                self.get_live_bars_from = dt
-                        buf_klines_last_sec = {}
-
-                    self._data.extend(_klines)  # we are sending it for processing
-                    if _klines or _empty:  # if you have received new data
-                        break
-
-                # here you can optimize through threads and request less often, recalculating how long to wait
-                sleep(1)
-
-            else:
-                self._state = self._ST_OVER
-                break
+            print(f"Live started for ticker: {self.symbol}")
+            if self._store.category == 'linear':
+                self._store.bybit_linear_socket.kline_stream(interval=int(self.interval), symbol=self.symbol,
+                                                             callback=self._handle_kline_socket_message)
+        else:
+            self._state = self._ST_OVER
 
     def haslivedata(self):
         return self._state == self._ST_LIVE and self._data
@@ -194,109 +169,74 @@ class BybitData(DataBase):
             self._state = self._ST_HISTORBACK
             self.put_notification(self.DELAYED)
 
-            # calc number of request, when we have start_date, and limit rows per request
-            if self.interval not in ['D', 'W', 'M']:
-                delta_time = int(self.interval)
+            klines = self._get_historical_klines()
+
+            self.get_live_bars_from = datetime.now().replace(second=0, microsecond=0)
+
+            print(f"- {self.symbol} - History data - Ok")
+
+            if 'result' in klines and 'list' in klines['result'] and klines['result']['list']:
+                klines = klines['result']['list']
+                klines = klines[::-1]  # inverse
+                klines = klines[:-1]  # -1 last row as it can be in process of forming
             else:
-                if self.interval == 'D': delta_time = 60 * 24
-                if self.interval == 'W': delta_time = 60 * 24 * 7
-                if self.interval == 'M': delta_time = 60 * 24 * 30
+                klines = []
 
-            total_minutes = (datetime.now() - self.start_date).total_seconds() // 60
-            num_requests = int(total_minutes // (self.limit * delta_time))
+            self.all_history_data = klines  # first receive of the history -> save it to a list
 
-            # get all rows by limit per request
-            for i in range(num_requests+1):
-                self.start_date = round(self.start_date.timestamp() * 1000)
-                _now = datetime.now()
-                klines = self._store.bybit_session.get_kline(
-                    category=self._store.category,
-                    symbol=self.symbol,
-                    interval=self.interval,
-                    start=self.start_date,  # in milliseconds
-                    # end=round(_now.timestamp()*1000),  # in milliseconds
-                    limit=self.limit,
-                )
-
-                self.get_live_bars_from = _now
-
-                if 'result' in klines and 'list' in klines['result'] and klines['result']['list']:
-                    klines = klines['result']['list']
-                    klines = klines[::-1]  # inverse
-                    klines = klines[:-1]  # -1 last row as it can be in process of forming
-                else:
-                    klines = []
-
-                is_data = ""
-                if not len(klines): is_data = " (no data)"
-                print(f"- {self.symbol} - History data from {datetime.fromtimestamp(int(self.start_date) // 1000)} + {self.limit} rows{is_data} - Ok")
-
-                if not self.all_history_data:
-                    self.all_history_data = klines  # first receive of the history -> save it to a list
-                else:
-                    self.all_history_data.extend(klines)
-
-                try:
-                    if self.p.drop_newest:
-                        klines.pop()
-                    self._data.extend(klines)
-                except Exception as e:
-                    print("Exception (try set from_date in utc format):", e)
-
-                # change self.start_date at every request
-                if self.all_history_data:
-                    self.start_date = self.all_history_data[-1][0]  # timestamp
-                    # b = self.start_date
-                    self.start_date = datetime.fromtimestamp(int(self.start_date) / 1000) + timedelta(minutes=delta_time)
-                    # self.start_date = round(int(self.start_date.timestamp()) * 1000)
-                    # print(f"\t --> {datetime.fromtimestamp(int(b) / 1000)} {datetime.fromtimestamp(int(self.start_date) / 1000)}")
-                else:
-                    self.start_date = datetime.fromtimestamp(int(self.start_date) / 1000) + timedelta(minutes=delta_time * self.limit)
-                    # self.start_date = round(int(self.start_date.timestamp()) * 1000)
+            try:
+                if self.p.drop_newest:
+                    klines.pop()
+                self._data.extend(klines)
+            except Exception as e:
+                print("Exception (try set from_date in utc format):", e)
 
         else:
             self._start_live()
 
-    def get_previous_future_candle_time(self, ):
-        # timeframe = "D1"
-        now = datetime.now()
-        # now = datetime.datetime.fromisoformat("2023-03-20 00:00")
-        now_hour = now.hour
-        now_minutes = now.minute
+    def _get_historical_klines(self):
+        output_data = []
+        limit = 1000
 
-        _previous_candle_time, _current_candle_time, _future_candle_time = None, None, None
+        from_ts = self.start_date.timestamp() * 1000
+        from_ts = int(max(self._get_earliest_valid_timestamp(), from_ts))
 
-        if self.interval in ["D", "W", "M"]:
-            _current_candle_time = datetime.fromisoformat(now.strftime('%Y-%m-%d') + " " + "00:00")
-            # print(_current_candle_time)
+        end_ts = int(datetime.now().timestamp() * 1000)
+        timeframe = interval_to_milliseconds(self.interval)
 
-            days_back = 1  # for D
-            if self.interval == "W":  # for week
-                day_of_week = _current_candle_time.weekday()  # number of day in week
-                days_back = day_of_week + 1
-            if self.interval == "M":  # for month
-                num_days = (datetime.now().date() - date(now.year, now.month, 1)).days
-                days_back = num_days + 1
+        idx = 0
+        while True:
 
-            _previous_candle_time = _current_candle_time - timedelta(days=days_back)
-            _future_candle_time = _current_candle_time + timedelta(days=days_back)
-            # print(_previous_candle_time)
-            # print(_future_candle_time)
+            temp_data = self._store.bybit_session.get_kline(category="linear",
+                                                            symbol=self.symbol,
+                                                            interval=self.interval,
+                                                            start=from_ts,
+                                                            end=end_ts,
+                                                            limit=limit)
 
-        if self.interval in ['1', '3', '5', '15', '30', '60', '120', '240', '360', '720']:
-            _minutes = int(self.interval)
+            start_data_timestamp = float(temp_data['result']['list'][-1][0]) / 1000
 
-            # H1 .. M1
-            now_minutes = (now_minutes // _minutes) * _minutes
-            pre_minutes = (now_minutes // _minutes + 1) * _minutes - now_minutes
+            if temp_data['result']['list']:
+                if not output_data:
+                    output_data = temp_data
+                else:
+                    output_data['result']['list'].extend(temp_data['result']['list'])
 
-            _current_candle_time = datetime.fromisoformat(
-                now.strftime('%Y-%m-%d') + " " + f"{now_hour:02}:{now_minutes:02}")
-            # print(_current_candle_time)
+            end_ts = int(start_data_timestamp * 1000 - timeframe)
 
-            _previous_candle_time = _current_candle_time - timedelta(minutes=pre_minutes)
-            _future_candle_time = _current_candle_time + timedelta(minutes=pre_minutes)
-            # print(_previous_candle_time)
-            # print(_future_candle_time)
+            if end_ts and end_ts <= from_ts:
+                break
 
-        return _previous_candle_time, _current_candle_time, _future_candle_time
+            if not len(temp_data) or len(temp_data['result']['list']) < limit:
+                break
+
+            idx += 1
+
+            if idx % 3 == 0:
+                sleep(1)
+
+        return output_data
+
+    def _get_earliest_valid_timestamp(self) -> float:
+        info = self._store.bybit_session.get_instruments_info(category=self._store.category, symbol=self.symbol)
+        return float(info['result']['list'][0]['launchTime'])
